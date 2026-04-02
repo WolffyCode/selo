@@ -19,6 +19,21 @@
 
 ## Install
 
+当前仓库代码已经可用，但**还没有发布到 npm**。
+
+### Local development
+
+在本机调试时，使用：
+
+```bash
+cd /Users/wangbingkun/Desktop/person/selo
+env npm_config_prefix=$HOME/.local npm link
+```
+
+### After npm publish
+
+发布到 npm 之后，再使用：
+
 ```bash
 npm i -g @wolffycode/selo
 ```
