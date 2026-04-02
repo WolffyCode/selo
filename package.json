@@ -1,0 +1,36 @@
+{
+  "name": "@wolffycode/selo",
+  "version": "0.1.0",
+  "description": "Launch Claude with providers from CC Switch.",
+  "type": "commonjs",
+  "license": "MIT",
+  "bin": {
+    "selo": "bin/selo.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "claude",
+    "cc-switch",
+    "cli",
+    "launcher"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WolffyCode/selo.git"
+  },
+  "bugs": {
+    "url": "https://github.com/WolffyCode/selo/issues"
+  },
+  "homepage": "https://github.com/WolffyCode/selo#readme",
+  "engines": {
+    "node": ">=18"
+  }
+}
