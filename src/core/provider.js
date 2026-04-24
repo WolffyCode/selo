@@ -96,6 +96,10 @@ function getBaseUrl(settingsConfig) {
 }
 
 function getCodexSubText(row) {
+  if (row.notes && row.notes.trim()) {
+    return row.notes;
+  }
+
   try {
     const cfg = JSON.parse(row.settings_config);
     const text = typeof cfg.config === 'string' ? cfg.config : '';

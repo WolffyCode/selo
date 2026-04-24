@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  getCodexSubText,
   normalizeProviderSettings,
   resolveDefaultProviderId,
   resolveDefaultProviderIdByKeys,
@@ -103,4 +104,16 @@ test('normalizeProviderSettings backfills preferred model into env', () => {
   assert.equal(settings.model, 'glm-5.1');
   assert.equal(settings.env.ANTHROPIC_MODEL, 'glm-5.1');
   assert.equal(settings.env.ANTHROPIC_REASONING_MODEL, 'glm-5.1');
+});
+
+test('getCodexSubText prefers CC Switch notes over config details', () => {
+  assert.equal(
+    getCodexSubText({
+      notes: 'fast shared codex provider',
+      settings_config: JSON.stringify({
+        config: 'model = "gpt-5.4"\nbase_url = "https://example.com"',
+      }),
+    }),
+    'fast shared codex provider',
+  );
 });
