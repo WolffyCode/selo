@@ -3,12 +3,21 @@ const readline = require('node:readline');
 const { execFileSync, spawn } = require('node:child_process');
 
 const { version: VERSION } = require('../package.json');
+const { createCodexLaunchPlan } = require('./core/codex-launch.js');
 const { createLaunchPlan } = require('./core/launch.js');
-const { getSubText, resolveDefaultProviderId } = require('./core/provider.js');
+const {
+  getCodexSubText,
+  getSubText,
+  resolveDefaultProviderId,
+  resolveDefaultProviderIdByKeys,
+} = require('./core/provider.js');
 const {
   DB_PATH,
   SETTINGS_PATH,
   getFingerprint,
+  loadCodexProviderById,
+  loadCodexSnapshot,
+  loadCommonCodexConfig,
   loadCommonClaudeSettings,
   loadProviderById,
   loadSnapshot,
@@ -21,6 +30,10 @@ function buildVersionString(version = VERSION) {
 
 function parseCliArgs(argv) {
   const args = [...argv];
+
+  if (args[0] === 'claude') {
+    args.shift();
+  }
 
   if (args[0] === '-v' || args[0] === '--version') {
     return {
@@ -67,6 +80,18 @@ function assertClaudeAvailable({ execFileSyncFn = execFileSync } = {}) {
   } catch (error) {
     if (error && error.code === 'ENOENT') {
       throw new Error('claude CLI is required. Please install Claude Code first.');
+    }
+
+    throw error;
+  }
+}
+
+function assertCodexAvailable({ execFileSyncFn = execFileSync } = {}) {
+  try {
+    execFileSyncFn('codex', ['--version'], { stdio: 'ignore' });
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      throw new Error('codex CLI is required. Please install Codex CLI first.');
     }
 
     throw error;
@@ -181,7 +206,269 @@ function drawPicker(stream, rows, selectedId, footerMessage = '') {
   }
 }
 
-async function run(argv = [], deps = {}) {
+function drawCodexPicker(stream, rows, selectedId, footerMessage = '') {
+  const B = '\x1b[1m';
+  const CY = '\x1b[36m';
+  const D = '\x1b[2m';
+  const R = '\x1b[0m';
+
+  clearScreen(stream);
+  stream.write('\n  ' + CY + B + 'SELO - Select Codex Provider' + R + '\n\n');
+  rows.forEach((row) => {
+    const active = row.id === selectedId;
+    const prefix = active ? '  ' + CY + B + '\u276f ' + R : '    ';
+    const name = active ? B + row.name + R : row.name;
+    const sub = D + getCodexSubText(row) + R;
+    stream.write(prefix + name + '\n');
+    stream.write('    ' + sub + '\n');
+  });
+
+  stream.write('\n  ' + D + '\u2191\u2193 navigate  Enter select  Esc cancel' + R + '\n');
+  if (footerMessage) {
+    stream.write('\n  ' + footerMessage + '\n');
+  }
+}
+
+function attachChildHandlers({
+  child,
+  launchPlan,
+  commandName,
+  resolve,
+  reject,
+  processObj = process,
+}) {
+  const signals = ['SIGINT', 'SIGTERM'];
+  let settled = false;
+
+  const removeSignalHandlers = () => {
+    signals.forEach((signal) => {
+      processObj.removeListener(signal, onSignal);
+    });
+  };
+
+  const settle = async (callback) => {
+    if (settled) {
+      return;
+    }
+
+    settled = true;
+    removeSignalHandlers();
+
+    try {
+      await launchPlan.cleanup();
+    } catch (error) {
+      reject(error);
+      return;
+    }
+
+    callback();
+  };
+
+  function onSignal(signal) {
+    if (typeof child.kill === 'function') {
+      child.kill(signal);
+    }
+  }
+
+  signals.forEach((signal) => {
+    processObj.on(signal, onSignal);
+  });
+
+  child.on('error', (error) => {
+    void settle(() => {
+      reject(error.code === 'ENOENT'
+        ? new Error(`${commandName} CLI is required. Please install ${commandName} CLI first.`)
+        : error);
+    });
+  });
+
+  child.on('exit', (code, signal) => {
+    void settle(() => {
+      if (signal) {
+        reject({ signal });
+        return;
+      }
+      resolve(code ?? 0);
+    });
+  });
+}
+
+function resolveDefaultCodexProviderId(rows, switchSettings = {}, seloSettings = {}) {
+  return resolveDefaultProviderIdByKeys(rows, switchSettings, seloSettings, {
+    currentProviderKey: 'currentProviderCodex',
+    lastProviderKey: 'lastProviderCodex',
+  });
+}
+
+function reconcileCodexSelection(
+  selectedId,
+  previousRows,
+  nextRows,
+  switchSettings = {},
+  seloSettings = {}
+) {
+  if (!Array.isArray(nextRows) || nextRows.length === 0) {
+    return null;
+  }
+
+  if (selectedId && nextRows.some((row) => row.id === selectedId)) {
+    return selectedId;
+  }
+
+  return resolveDefaultCodexProviderId(nextRows, switchSettings, seloSettings);
+}
+
+async function runCodex(argv = [], deps = {}) {
+  const {
+    stdin = process.stdin,
+    stdout = process.stdout,
+    stderr = process.stderr,
+    spawnFn = spawn,
+    loadCodexSnapshotFn = loadCodexSnapshot,
+    loadCodexProviderByIdFn = loadCodexProviderById,
+    loadCommonCodexConfigFn = loadCommonCodexConfig,
+    loadSeloSettingsFn = loadSeloSettings,
+    saveSeloSettingsFn = saveSeloSettings,
+    createCodexLaunchPlanFn = createCodexLaunchPlan,
+    createSnapshotWatcherFn = createSnapshotWatcher,
+    assertCodexAvailableFn = assertCodexAvailable,
+  } = deps;
+
+  void stdout;
+
+  if (!stdin.isTTY || typeof stdin.setRawMode !== 'function') {
+    throw new Error('selo requires an interactive terminal.');
+  }
+
+  let snapshot = await loadCodexSnapshotFn();
+  let seloSettings = await loadSeloSettingsFn();
+  let selectedId = resolveDefaultCodexProviderId(
+    snapshot.providers,
+    snapshot.switchSettings,
+    seloSettings
+  );
+  let footerMessage = '';
+  let reloading = false;
+  let queuedReload = false;
+
+  const reloadSnapshot = async () => {
+    if (reloading) {
+      queuedReload = true;
+      return;
+    }
+
+    reloading = true;
+    try {
+      do {
+        queuedReload = false;
+        const nextSnapshot = await loadCodexSnapshotFn();
+        selectedId = reconcileCodexSelection(
+          selectedId,
+          snapshot.providers,
+          nextSnapshot.providers,
+          nextSnapshot.switchSettings,
+          seloSettings
+        );
+        snapshot = nextSnapshot;
+        footerMessage = 'CC Switch updated. Picker reloaded.';
+        drawCodexPicker(stderr, snapshot.providers, selectedId, footerMessage);
+      } while (queuedReload);
+    } catch (error) {
+      footerMessage = `Reload failed: ${error.message}`;
+      drawCodexPicker(stderr, snapshot.providers, selectedId, footerMessage);
+    } finally {
+      reloading = false;
+    }
+  };
+
+  const watcher = createSnapshotWatcherFn({
+    initialFingerprint: snapshot.fingerprint,
+    onChange: reloadSnapshot,
+    onError: (error) => {
+      footerMessage = `Watch failed: ${error.message}`;
+      drawCodexPicker(stderr, snapshot.providers, selectedId, footerMessage);
+    },
+  });
+
+  readline.emitKeypressEvents(stdin);
+  stdin.setRawMode(true);
+  stdin.resume();
+  drawCodexPicker(stderr, snapshot.providers, selectedId, footerMessage);
+
+  return new Promise((resolve, reject) => {
+    const finish = (error, exitCode = 0) => {
+      watcher.close();
+      stdin.removeListener('keypress', onKeypress);
+      restoreTerminal(stdin);
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(exitCode);
+    };
+
+    const onKeypress = async (_, key) => {
+      if (key.name === 'up' || key.name === 'down') {
+        const rows = snapshot.providers;
+        const currentIndex = Math.max(0, rows.findIndex((row) => row.id === selectedId));
+        const delta = key.name === 'up' ? -1 : 1;
+        const nextIndex = (currentIndex + delta + rows.length) % rows.length;
+        selectedId = rows[nextIndex].id;
+        footerMessage = '';
+        drawCodexPicker(stderr, rows, selectedId, footerMessage);
+        return;
+      }
+
+      if (key.name === 'return') {
+        watcher.close();
+        stdin.removeListener('keypress', onKeypress);
+        restoreTerminal(stdin);
+        clearScreen(stderr);
+
+        try {
+          const latestProvider = loadCodexProviderByIdFn(selectedId);
+          const commonConfig = loadCommonCodexConfigFn();
+          seloSettings = await loadSeloSettingsFn();
+          await saveSeloSettingsFn({
+            ...seloSettings,
+            lastProviderCodex: latestProvider.id,
+          });
+          assertCodexAvailableFn();
+
+          const launchPlan = await createCodexLaunchPlanFn({
+            provider: latestProvider,
+            commonConfig,
+            codexArgs: argv,
+          });
+
+          const child = spawnFn(launchPlan.command, launchPlan.args, {
+            stdio: 'inherit',
+            env: launchPlan.env,
+          });
+
+          attachChildHandlers({
+            child,
+            launchPlan,
+            commandName: 'codex',
+            resolve,
+            reject,
+          });
+        } catch (error) {
+          reject(error);
+        }
+        return;
+      }
+
+      if (key.name === 'escape' || (key.ctrl && key.name === 'c')) {
+        finish(null, 1);
+      }
+    };
+
+    stdin.on('keypress', onKeypress);
+  });
+}
+
+async function runClaude(argv = [], deps = {}) {
   const {
     stdin = process.stdin,
     stdout = process.stdout,
@@ -343,10 +630,33 @@ async function run(argv = [], deps = {}) {
   });
 }
 
+async function run(argv = [], deps = {}) {
+  const {
+    stdout = process.stdout,
+  } = deps;
+
+  if (argv[0] === '-v' || argv[0] === '--version') {
+    stdout.write(buildVersionString(VERSION) + '\n');
+    return 0;
+  }
+
+  if (argv[0] === 'claude') {
+    return runClaude(argv.slice(1), deps);
+  }
+
+  if (argv[0] === 'codex') {
+    return runCodex(argv.slice(1), deps);
+  }
+
+  throw new Error('Usage: selo <claude|codex> [args]');
+}
+
 module.exports = {
+  assertCodexAvailable,
   buildVersionString,
   createSnapshotWatcher,
   parseCliArgs,
   reconcileSelection,
   run,
+  runClaude,
 };

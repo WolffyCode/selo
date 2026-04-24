@@ -20,12 +20,34 @@ const PROVIDERS_SQL = [
   "WHERE app_type='claude'",
   'ORDER BY created_at;',
 ].join(' ');
+const CODEX_PROVIDERS_SQL = [
+  'SELECT',
+  'id,',
+  'name,',
+  'notes,',
+  'settings_config,',
+  'meta,',
+  'is_current',
+  'FROM providers',
+  "WHERE app_type='codex'",
+  'ORDER BY created_at;',
+].join(' ');
 const COMMON_CLAUDE_CONFIG_SQL = [
   'SELECT value',
   'FROM settings',
   "WHERE key='common_config_claude'",
   'LIMIT 1;',
 ].join(' ');
+const COMMON_CODEX_CONFIG_SQL = [
+  'SELECT value',
+  'FROM settings',
+  "WHERE key='common_config_codex'",
+  'LIMIT 1;',
+].join(' ');
+
+function escapeSqlString(value) {
+  return String(value).replace(/'/g, "''");
+}
 
 function normalizeSqliteError(error, dbPath) {
   if (error && error.code === 'ENOENT') {
@@ -72,8 +94,18 @@ function loadProviders({ dbPath = DB_PATH, queryJsonFn = queryJson } = {}) {
   return rows;
 }
 
+function loadCodexProviders({ dbPath = DB_PATH, queryJsonFn = queryJson } = {}) {
+  const rows = queryJsonFn(CODEX_PROVIDERS_SQL, { dbPath });
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new Error('No codex providers found in CC Switch.\nPlease configure providers in CC Switch first.');
+  }
+
+  return rows;
+}
+
 function loadProviderById(providerId, { dbPath = DB_PATH, queryJsonFn = queryJson } = {}) {
-  const safeId = String(providerId).replace(/'/g, "''");
+  const safeId = escapeSqlString(providerId);
   const rows = queryJsonFn([
     'SELECT',
     'id,',
@@ -84,6 +116,29 @@ function loadProviderById(providerId, { dbPath = DB_PATH, queryJsonFn = queryJso
     'is_current',
     'FROM providers',
     "WHERE app_type='claude'",
+    `AND id='${safeId}'`,
+    'LIMIT 1;',
+  ].join(' '), { dbPath });
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new Error(`Selected provider "${providerId}" was removed from CC Switch. Please reopen selo and try again.`);
+  }
+
+  return rows[0];
+}
+
+function loadCodexProviderById(providerId, { dbPath = DB_PATH, queryJsonFn = queryJson } = {}) {
+  const safeId = escapeSqlString(providerId);
+  const rows = queryJsonFn([
+    'SELECT',
+    'id,',
+    'name,',
+    'notes,',
+    'settings_config,',
+    'meta,',
+    'is_current',
+    'FROM providers',
+    "WHERE app_type='codex'",
     `AND id='${safeId}'`,
     'LIMIT 1;',
   ].join(' '), { dbPath });
@@ -107,6 +162,20 @@ function loadCommonClaudeSettings({ dbPath = DB_PATH, queryJsonFn = queryJson } 
   }
 
   return parseJson(row.value, `Invalid common Claude config in ${dbPath}`);
+}
+
+function loadCommonCodexConfig({ dbPath = DB_PATH, queryJsonFn = queryJson } = {}) {
+  const rows = queryJsonFn(COMMON_CODEX_CONFIG_SQL, { dbPath });
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return '';
+  }
+
+  const [row] = rows;
+  if (!row || typeof row.value !== 'string') {
+    return '';
+  }
+
+  return row.value;
 }
 
 async function loadSwitchSettings({ settingsPath = SETTINGS_PATH, readFileFn = fs.readFile } = {}) {
@@ -166,10 +235,35 @@ async function loadSnapshot({
   };
 }
 
+async function loadCodexSnapshot({
+  loadCodexProvidersFn = loadCodexProviders,
+  loadCommonCodexConfigFn = loadCommonCodexConfig,
+  loadSwitchSettingsFn = loadSwitchSettings,
+  getFingerprintFn = getFingerprint,
+} = {}) {
+  const [providers, commonSettings, switchSettings, fingerprint] = await Promise.all([
+    Promise.resolve(loadCodexProvidersFn()),
+    Promise.resolve(loadCommonCodexConfigFn()),
+    Promise.resolve(loadSwitchSettingsFn()),
+    Promise.resolve(getFingerprintFn()),
+  ]);
+
+  return {
+    providers,
+    commonSettings,
+    switchSettings,
+    fingerprint,
+  };
+}
+
 module.exports = {
   DB_PATH,
   SETTINGS_PATH,
   getFingerprint,
+  loadCodexProviderById,
+  loadCodexProviders,
+  loadCodexSnapshot,
+  loadCommonCodexConfig,
   loadCommonClaudeSettings,
   loadProviderById,
   loadProviders,

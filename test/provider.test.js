@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   normalizeProviderSettings,
   resolveDefaultProviderId,
+  resolveDefaultProviderIdByKeys,
   resolveEffectiveSettings,
 } = require('../src/core/provider.js');
 
@@ -17,6 +18,26 @@ test('resolveDefaultProviderId prefers currentProviderClaude over selo local sta
   assert.equal(
     resolveDefaultProviderId(rows, { currentProviderClaude: 'a' }, { lastProviderClaude: 'c' }),
     'a',
+  );
+});
+
+test('resolveDefaultProviderId supports Codex provider state keys', () => {
+  const rows = [
+    { id: 'claude-id', is_current: 0 },
+    { id: 'codex-id', is_current: 0 },
+  ];
+
+  assert.equal(
+    resolveDefaultProviderIdByKeys(
+      rows,
+      { currentProviderCodex: 'codex-id' },
+      { lastProviderCodex: 'claude-id' },
+      {
+        currentProviderKey: 'currentProviderCodex',
+        lastProviderKey: 'lastProviderCodex',
+      },
+    ),
+    'codex-id',
   );
 });
 

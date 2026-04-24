@@ -95,6 +95,18 @@ function getBaseUrl(settingsConfig) {
   }
 }
 
+function getCodexSubText(row) {
+  try {
+    const cfg = JSON.parse(row.settings_config);
+    const text = typeof cfg.config === 'string' ? cfg.config : '';
+    const model = text.match(/^model\s*=\s*"([^"]+)"/m);
+    const baseUrl = text.match(/^base_url\s*=\s*"([^"]+)"/m);
+    return [model && model[1], baseUrl && baseUrl[1]].filter(Boolean).join('  ');
+  } catch {
+    return '';
+  }
+}
+
 function getSubText(row) {
   if (row.notes && row.notes.trim()) {
     return row.notes;
@@ -129,13 +141,21 @@ function buildChildEnv(settings) {
   return childEnv;
 }
 
-function resolveDefaultProviderId(rows, switchSettings = {}, seloSettings = {}) {
+function resolveDefaultProviderIdByKeys(
+  rows,
+  switchSettings = {},
+  seloSettings = {},
+  {
+    currentProviderKey = 'currentProviderClaude',
+    lastProviderKey = 'lastProviderClaude',
+  } = {}
+) {
   if (!Array.isArray(rows) || rows.length === 0) {
     return null;
   }
 
-  if (switchSettings.currentProviderClaude) {
-    const currentRow = rows.find((row) => row.id === switchSettings.currentProviderClaude);
+  if (switchSettings[currentProviderKey]) {
+    const currentRow = rows.find((row) => row.id === switchSettings[currentProviderKey]);
     if (currentRow) {
       return currentRow.id;
     }
@@ -146,8 +166,8 @@ function resolveDefaultProviderId(rows, switchSettings = {}, seloSettings = {}) 
     return isCurrentRow.id;
   }
 
-  if (seloSettings.lastProviderClaude) {
-    const lastRow = rows.find((row) => row.id === seloSettings.lastProviderClaude);
+  if (seloSettings[lastProviderKey]) {
+    const lastRow = rows.find((row) => row.id === seloSettings[lastProviderKey]);
     if (lastRow) {
       return lastRow.id;
     }
@@ -156,9 +176,17 @@ function resolveDefaultProviderId(rows, switchSettings = {}, seloSettings = {}) 
   return rows[0].id;
 }
 
+function resolveDefaultProviderId(rows, switchSettings = {}, seloSettings = {}) {
+  return resolveDefaultProviderIdByKeys(rows, switchSettings, seloSettings, {
+    currentProviderKey: 'currentProviderClaude',
+    lastProviderKey: 'lastProviderClaude',
+  });
+}
+
 module.exports = {
   buildChildEnv,
   getBaseUrl,
+  getCodexSubText,
   getPreferredModel,
   getSubText,
   mergeSettings,
@@ -167,5 +195,6 @@ module.exports = {
   parseProviderMeta,
   parseProviderSettings,
   resolveDefaultProviderId,
+  resolveDefaultProviderIdByKeys,
   resolveEffectiveSettings,
 };
