@@ -40,13 +40,17 @@ env npm_config_prefix=$HOME/.local npm link
 ```bash
 selo claude
 selo codex
+selo reclaude
 selo -v
 selo claude -d
+selo reclaude -d
 ```
 
 `selo claude -d` 会把 `--dangerously-skip-permissions` 传给 `claude`。
 
 `selo codex` 只管理终端版 Codex。桌面端 Codex 继续使用自己的配置。
+
+`selo reclaude` 不走 CC Switch，直接透传给本机 `reclaude` CLI。除 `-d` 翻译成 `--dangerously-skip-permissions` 外，其它参数（含 `-v`/`--version`）一律原样转发。
 
 ## How It Works
 

@@ -64,6 +64,26 @@ test('loadCodexProviders queries Codex app type', () => {
   assert.match(capturedSql, /WHERE app_type='codex'/);
 });
 
+test('provider queries follow CC Switch sort order', () => {
+  const capturedSql = {};
+
+  loadProviders({
+    queryJsonFn: (sql) => {
+      capturedSql.claude = sql;
+      return [{ id: 'a', name: 'Claude' }];
+    },
+  });
+  loadCodexProviders({
+    queryJsonFn: (sql) => {
+      capturedSql.codex = sql;
+      return [{ id: 'c', name: 'Codex' }];
+    },
+  });
+
+  assert.match(capturedSql.claude, /ORDER BY sort_index, created_at/);
+  assert.match(capturedSql.codex, /ORDER BY sort_index, created_at/);
+});
+
 test('loadCommonCodexConfig returns TOML text', () => {
   const config = loadCommonCodexConfig({
     queryJsonFn: () => [{ value: 'model_reasoning_effort = "xhigh"' }],

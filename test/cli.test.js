@@ -255,6 +255,56 @@ test('run launches explicit claude mode', async () => {
   assert.equal(cleanupCalled, true);
 });
 
+test('run reclaude spawns reclaude with -d translated and other args passed through', async () => {
+  const child = new EventEmitter();
+  child.kill = () => {};
+  let spawnInput;
+
+  const exitPromise = run(['reclaude', '-d', '--print', 'hi', '-v'], {
+    stdin: { isTTY: true, setRawMode() {} },
+    stdout: { write() {} },
+    stderr: { write() {} },
+    assertReclaudeAvailableFn: () => {},
+    spawnFn: (command, args, options) => {
+      spawnInput = { command, args, options };
+      setImmediate(() => child.emit('exit', 0, null));
+      return child;
+    },
+  });
+
+  assert.equal(await exitPromise, 0);
+  assert.equal(spawnInput.command, 'reclaude');
+  assert.deepStrictEqual(spawnInput.args, [
+    '--dangerously-skip-permissions',
+    '--print',
+    'hi',
+    '-v',
+  ]);
+  assert.equal(spawnInput.options.stdio, 'inherit');
+});
+
+test('run reclaude passes args through unchanged when -d is absent', async () => {
+  const child = new EventEmitter();
+  child.kill = () => {};
+  let spawnInput;
+
+  const exitPromise = run(['reclaude', '-v'], {
+    stdin: { isTTY: true, setRawMode() {} },
+    stdout: { write() {} },
+    stderr: { write() {} },
+    assertReclaudeAvailableFn: () => {},
+    spawnFn: (command, args, options) => {
+      spawnInput = { command, args, options };
+      setImmediate(() => child.emit('exit', 0, null));
+      return child;
+    },
+  });
+
+  assert.equal(await exitPromise, 0);
+  assert.equal(spawnInput.command, 'reclaude');
+  assert.deepStrictEqual(spawnInput.args, ['-v']);
+});
+
 test('run without a subcommand fails with usage', async () => {
   await assert.rejects(
     run([], {
@@ -262,6 +312,6 @@ test('run without a subcommand fails with usage', async () => {
       stdout: { write() {} },
       stderr: { write() {} },
     }),
-    /Usage: selo <claude\|codex>/,
+    /Usage: selo <claude\|codex\|reclaude>/,
   );
 });

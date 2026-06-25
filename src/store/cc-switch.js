@@ -18,7 +18,7 @@ const PROVIDERS_SQL = [
   'is_current',
   'FROM providers',
   "WHERE app_type='claude'",
-  'ORDER BY created_at;',
+  'ORDER BY sort_index, created_at;',
 ].join(' ');
 const CODEX_PROVIDERS_SQL = [
   'SELECT',
@@ -30,7 +30,7 @@ const CODEX_PROVIDERS_SQL = [
   'is_current',
   'FROM providers',
   "WHERE app_type='codex'",
-  'ORDER BY created_at;',
+  'ORDER BY sort_index, created_at;',
 ].join(' ');
 const COMMON_CLAUDE_CONFIG_SQL = [
   'SELECT value',

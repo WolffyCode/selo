@@ -98,6 +98,18 @@ function assertCodexAvailable({ execFileSyncFn = execFileSync } = {}) {
   }
 }
 
+function assertReclaudeAvailable({ execFileSyncFn = execFileSync } = {}) {
+  try {
+    execFileSyncFn('reclaude', ['--version'], { stdio: 'ignore' });
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      throw new Error('reclaude CLI is required. Please install reclaude CLI first.');
+    }
+
+    throw error;
+  }
+}
+
 function createSnapshotWatcher({
   switchDir = require('node:path').dirname(DB_PATH),
   pollIntervalMs = 750,
@@ -468,6 +480,43 @@ async function runCodex(argv = [], deps = {}) {
   });
 }
 
+async function runReclaude(argv = [], deps = {}) {
+  const {
+    spawnFn = spawn,
+    assertReclaudeAvailableFn = assertReclaudeAvailable,
+  } = deps;
+
+  const passthrough = [...argv];
+  let danger = false;
+  if (passthrough[0] === '-d') {
+    danger = true;
+    passthrough.shift();
+  }
+
+  const reclaudeArgs = [];
+  if (danger) {
+    reclaudeArgs.push('--dangerously-skip-permissions');
+  }
+  reclaudeArgs.push(...passthrough);
+
+  assertReclaudeAvailableFn();
+
+  return new Promise((resolve, reject) => {
+    const child = spawnFn('reclaude', reclaudeArgs, {
+      stdio: 'inherit',
+      env: process.env,
+    });
+
+    attachChildHandlers({
+      child,
+      launchPlan: { cleanup: async () => {} },
+      commandName: 'reclaude',
+      resolve,
+      reject,
+    });
+  });
+}
+
 async function runClaude(argv = [], deps = {}) {
   const {
     stdin = process.stdin,
@@ -648,15 +697,21 @@ async function run(argv = [], deps = {}) {
     return runCodex(argv.slice(1), deps);
   }
 
-  throw new Error('Usage: selo <claude|codex> [args]');
+  if (argv[0] === 'reclaude') {
+    return runReclaude(argv.slice(1), deps);
+  }
+
+  throw new Error('Usage: selo <claude|codex|reclaude> [args]');
 }
 
 module.exports = {
   assertCodexAvailable,
+  assertReclaudeAvailable,
   buildVersionString,
   createSnapshotWatcher,
   parseCliArgs,
   reconcileSelection,
   run,
   runClaude,
+  runReclaude,
 };
