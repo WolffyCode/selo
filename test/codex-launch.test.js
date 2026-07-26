@@ -5,13 +5,20 @@ const os = require('node:os');
 const path = require('node:path');
 
 const {
-  cleanupStaleCodexHomes,
+  CODEX_PROFILE_PREFIX,
+  cleanupStaleCodexProfiles,
   createCodexLaunchPlan,
   mergeCodexTomlConfig,
+  supportsCodexProfile,
 } = require('../src/core/codex-launch.js');
 
-test('createCodexLaunchPlan writes an isolated CODEX_HOME', async () => {
-  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'selo-codex-test-'));
+test('createCodexLaunchPlan writes a temporary profile in the native CODEX_HOME', async () => {
+  const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), 'selo-codex-home-test-'));
+  const nativeConfig = 'model = "native-model"\n[mcp_servers.local]\ncommand = "node"\n';
+  const nativeAuth = JSON.stringify({ tokens: { access_token: 'native-token' } });
+  await fs.writeFile(path.join(codexHome, 'config.toml'), nativeConfig, 'utf8');
+  await fs.writeFile(path.join(codexHome, 'auth.json'), nativeAuth, 'utf8');
+
   const plan = await createCodexLaunchPlan({
     provider: {
       name: 'Cubence Codex',
@@ -25,62 +32,71 @@ test('createCodexLaunchPlan writes an isolated CODEX_HOME', async () => {
     },
     commonConfig: 'model_reasoning_effort = "xhigh"\n',
     codexArgs: ['--search'],
-    tempRoot,
+    codexHome,
+    profileName: `${CODEX_PROFILE_PREFIX}test`,
   });
 
   assert.equal(plan.command, 'codex');
-  assert.deepStrictEqual(plan.args, ['--search']);
-  assert.equal(plan.env.CODEX_HOME, plan.codexHome);
+  assert.deepStrictEqual(plan.args, [
+    '--profile',
+    `${CODEX_PROFILE_PREFIX}test`,
+    '--search',
+  ]);
+  assert.equal(plan.env.CODEX_HOME, codexHome);
   assert.equal(plan.env.OPENAI_API_KEY, 'sk-test');
-  assert.match(plan.codexHome, new RegExp(`${path.basename(tempRoot)}/selo-codex-`));
+  assert.equal(plan.profilePath, path.join(
+    codexHome,
+    `${CODEX_PROFILE_PREFIX}test.config.toml`,
+  ));
 
-  const configText = await fs.readFile(path.join(plan.codexHome, 'config.toml'), 'utf8');
-  assert.match(configText, /model_reasoning_effort = "xhigh"/);
-  assert.match(configText, /model_provider = "custom"/);
-
-  const authText = await fs.readFile(path.join(plan.codexHome, 'auth.json'), 'utf8');
-  assert.deepStrictEqual(JSON.parse(authText), {
-    OPENAI_API_KEY: 'sk-test',
-  });
+  const profileText = await fs.readFile(plan.profilePath, 'utf8');
+  assert.match(profileText, /model_reasoning_effort = "xhigh"/);
+  assert.match(profileText, /model_provider = "custom"/);
+  assert.equal(await fs.readFile(path.join(codexHome, 'config.toml'), 'utf8'), nativeConfig);
+  assert.equal(await fs.readFile(path.join(codexHome, 'auth.json'), 'utf8'), nativeAuth);
 
   await plan.cleanup();
-  await assert.rejects(fs.stat(plan.codexHome), /ENOENT/);
-  await fs.rm(tempRoot, { recursive: true, force: true });
+  await plan.cleanup();
+  await assert.rejects(fs.stat(plan.profilePath), /ENOENT/);
+  await fs.stat(codexHome);
+  await fs.rm(codexHome, { recursive: true, force: true });
 });
 
-test('createCodexLaunchPlan links native Codex session state for resume', async () => {
-  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'selo-codex-test-'));
-  const sourceHome = await fs.mkdtemp(path.join(os.tmpdir(), 'selo-codex-source-'));
-  await fs.mkdir(path.join(sourceHome, 'sessions'));
-  await fs.mkdir(path.join(sourceHome, 'archived_sessions'));
+test('createCodexLaunchPlan passes unsupported management commands through without a profile', async () => {
+  const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), 'selo-codex-home-test-'));
+  const plan = await createCodexLaunchPlan({
+    provider: {
+      name: 'Codex Provider',
+      settings_config: JSON.stringify({
+        auth: { OPENAI_API_KEY: 'sk-test' },
+        config: 'model = "gpt-5.4"\n',
+      }),
+      meta: '{}',
+    },
+    codexArgs: ['doctor', '--json'],
+    codexHome,
+    profileName: `${CODEX_PROFILE_PREFIX}unused`,
+  });
 
-  const originalHome = process.env.HOME;
-  process.env.HOME = path.dirname(sourceHome);
-  const nativeCodexHome = path.join(process.env.HOME, '.codex');
-  await fs.rename(sourceHome, nativeCodexHome);
+  assert.deepStrictEqual(plan.args, ['doctor', '--json']);
+  assert.equal(plan.profilePath, '');
+  assert.equal(plan.env.OPENAI_API_KEY, 'sk-test');
+  await plan.cleanup();
+  await fs.stat(codexHome);
+  await fs.rm(codexHome, { recursive: true, force: true });
+});
 
-  try {
-    const plan = await createCodexLaunchPlan({
-      provider: {
-        name: 'Codex Provider',
-        settings_config: JSON.stringify({ config: 'model = "gpt-5.4"\n' }),
-        meta: '{}',
-      },
-      codexArgs: ['resume', '019dbd7e-fc5b-7b71-b8ea-f48ad567985f'],
-      tempRoot,
-    });
-
-    const sessionsStats = await fs.lstat(path.join(plan.codexHome, 'sessions'));
-    const archivedSessionsStats = await fs.lstat(path.join(plan.codexHome, 'archived_sessions'));
-    assert.equal(sessionsStats.isSymbolicLink(), true);
-    assert.equal(archivedSessionsStats.isSymbolicLink(), true);
-
-    await plan.cleanup();
-  } finally {
-    process.env.HOME = originalHome;
-    await fs.rm(tempRoot, { recursive: true, force: true });
-    await fs.rm(nativeCodexHome, { recursive: true, force: true });
-  }
+test('supportsCodexProfile distinguishes runtime and management commands', () => {
+  assert.equal(supportsCodexProfile([]), true);
+  assert.equal(supportsCodexProfile(['--search']), true);
+  assert.equal(supportsCodexProfile(['exec', '--ephemeral', 'hello']), true);
+  assert.equal(supportsCodexProfile(['resume', '--last']), true);
+  assert.equal(supportsCodexProfile(['mcp', 'list']), true);
+  assert.equal(supportsCodexProfile(['debug', 'prompt-input']), true);
+  assert.equal(supportsCodexProfile(['doctor', '--json']), false);
+  assert.equal(supportsCodexProfile(['plugin', 'list']), false);
+  assert.equal(supportsCodexProfile(['features', 'list']), false);
+  assert.equal(supportsCodexProfile(['debug', 'models']), false);
 });
 
 test('mergeCodexTomlConfig lets provider keys override common keys', () => {
@@ -95,23 +111,27 @@ test('mergeCodexTomlConfig lets provider keys override common keys', () => {
   assert.match(text, /\[projects."\/tmp\/b"\]/);
 });
 
-test('cleanupStaleCodexHomes removes old selo-codex temp dirs only', async () => {
-  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'selo-codex-clean-test-'));
-  const oldDir = path.join(tempRoot, 'selo-codex-old');
-  const freshDir = path.join(tempRoot, 'selo-codex-fresh');
-  const otherDir = path.join(tempRoot, 'other');
-  await fs.mkdir(oldDir);
-  await fs.mkdir(freshDir);
-  await fs.mkdir(otherDir);
+test('cleanupStaleCodexProfiles removes old selo profiles only', async () => {
+  const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), 'selo-codex-clean-test-'));
+  const oldProfile = path.join(codexHome, `${CODEX_PROFILE_PREFIX}old.config.toml`);
+  const freshProfile = path.join(codexHome, `${CODEX_PROFILE_PREFIX}fresh.config.toml`);
+  const otherFile = path.join(codexHome, 'config.toml');
+  const matchingDir = path.join(codexHome, `${CODEX_PROFILE_PREFIX}directory.config.toml`);
+  await fs.writeFile(oldProfile, 'model = "old"\n', 'utf8');
+  await fs.writeFile(freshProfile, 'model = "fresh"\n', 'utf8');
+  await fs.writeFile(otherFile, 'model = "native"\n', 'utf8');
+  await fs.mkdir(matchingDir);
 
   const now = Date.now();
   const oldDate = new Date(now - 25 * 60 * 60 * 1000);
-  await fs.utimes(oldDir, oldDate, oldDate);
+  await fs.utimes(oldProfile, oldDate, oldDate);
+  await fs.utimes(matchingDir, oldDate, oldDate);
 
-  await cleanupStaleCodexHomes({ tempRoot, now });
+  await cleanupStaleCodexProfiles({ codexHome, now });
 
-  await assert.rejects(fs.stat(oldDir), /ENOENT/);
-  await fs.stat(freshDir);
-  await fs.stat(otherDir);
-  await fs.rm(tempRoot, { recursive: true, force: true });
+  await assert.rejects(fs.stat(oldProfile), /ENOENT/);
+  await fs.stat(freshProfile);
+  await fs.stat(otherFile);
+  await fs.stat(matchingDir);
+  await fs.rm(codexHome, { recursive: true, force: true });
 });

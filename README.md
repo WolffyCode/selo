@@ -43,10 +43,13 @@ selo codex
 selo reclaude
 selo -v
 selo claude -d
+selo codex -d
 selo reclaude -d
 ```
 
 `selo claude -d` 会把 `--dangerously-skip-permissions` 传给 `claude`。
+
+`selo codex -d` 会把 `--dangerously-bypass-approvals-and-sandbox` 传给 `codex`。
 
 `selo codex` 只管理终端版 Codex。桌面端 Codex 继续使用自己的配置。
 
@@ -68,12 +71,12 @@ selo reclaude -d
 - 从 `~/.cc-switch/cc-switch.db` 读取 Codex providers
 - 从 `~/.cc-switch/settings.json` 读取当前选中的 Codex provider
 - 如果 provider 开启了 `commonConfigEnabled`，会合并 `common_config_codex`
-- 每次启动创建独立临时 `CODEX_HOME`
-- 临时目录里写入本次使用的 `config.toml` 和 `auth.json`
-- `CODEX_HOME` 只传给这次启动的 `codex` 子进程
-- 不修改 `~/.codex`
-- `codex` 退出后删除临时目录
-- 每次启动前清理超过 24 小时的 `selo-codex-*` 临时目录
+- 保留原生 `CODEX_HOME`，继续使用现有会话、信任状态、MCP、插件、技能和规则
+- 每次启动写入独立的临时 Codex profile，只覆盖本次选择的 provider 配置
+- provider API key 只传给这次启动的 `codex` 子进程
+- `codex` 退出后删除临时 profile
+- 每次启动前清理超过 24 小时的 `selo-provider-*` 临时 profile
+- `doctor`、`plugin` 等不支持 profile 的管理命令保持原参数透传
 
 ## Consistency Rules
 

@@ -330,6 +330,20 @@ function reconcileCodexSelection(
   return resolveDefaultCodexProviderId(nextRows, switchSettings, seloSettings);
 }
 
+function normalizeCodexArgs(argv = []) {
+  const args = [...argv];
+  if (args[0] !== '-d') {
+    return args;
+  }
+
+  args.shift();
+  const dangerArg = '--dangerously-bypass-approvals-and-sandbox';
+  if (!args.includes(dangerArg)) {
+    args.unshift(dangerArg);
+  }
+  return args;
+}
+
 async function runCodex(argv = [], deps = {}) {
   const {
     stdin = process.stdin,
@@ -450,7 +464,7 @@ async function runCodex(argv = [], deps = {}) {
           const launchPlan = await createCodexLaunchPlanFn({
             provider: latestProvider,
             commonConfig,
-            codexArgs: argv,
+            codexArgs: normalizeCodexArgs(argv),
           });
 
           const child = spawnFn(launchPlan.command, launchPlan.args, {
@@ -709,6 +723,7 @@ module.exports = {
   assertReclaudeAvailable,
   buildVersionString,
   createSnapshotWatcher,
+  normalizeCodexArgs,
   parseCliArgs,
   reconcileSelection,
   run,

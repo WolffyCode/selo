@@ -1,14 +1,53 @@
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const { randomUUID } = require('node:crypto');
 
 const {
   parseProviderMeta,
   parseProviderSettings,
 } = require('./provider.js');
 
-const CODEX_TEMP_PREFIX = 'selo-codex-';
-const STALE_CODEX_HOME_AGE_MS = 24 * 60 * 60 * 1000;
+const CODEX_PROFILE_PREFIX = 'selo-provider-';
+const STALE_CODEX_PROFILE_AGE_MS = 24 * 60 * 60 * 1000;
+const CODEX_COMMANDS = new Set([
+  'app',
+  'app-server',
+  'apply',
+  'archive',
+  'cloud',
+  'completion',
+  'debug',
+  'delete',
+  'doctor',
+  'exec',
+  'exec-server',
+  'features',
+  'fork',
+  'help',
+  'login',
+  'logout',
+  'mcp',
+  'mcp-server',
+  'plugin',
+  'remote-control',
+  'resume',
+  'review',
+  'sandbox',
+  'unarchive',
+  'update',
+]);
+const PROFILE_COMMANDS = new Set([
+  'archive',
+  'delete',
+  'exec',
+  'fork',
+  'mcp',
+  'resume',
+  'review',
+  'sandbox',
+  'unarchive',
+]);
 
 function parseTomlSections(text = '') {
   const sections = new Map();
@@ -103,22 +142,37 @@ function mergeCodexTomlConfig(commonConfig = '', providerConfig = '') {
   return stringifyParsedToml(parsed);
 }
 
-function hasAuthConfig(auth) {
-  return Boolean(auth) && typeof auth === 'object' && !Array.isArray(auth)
-    && Object.keys(auth).length > 0;
+function resolveCodexHome(env = process.env, homeDir = os.homedir()) {
+  return env.CODEX_HOME || path.join(homeDir, '.codex');
 }
 
-async function cleanupStaleCodexHomes({
-  tempRoot = os.tmpdir(),
+function supportsCodexProfile(codexArgs = []) {
+  const args = Array.isArray(codexArgs) ? codexArgs : [];
+  const commandIndex = args.findIndex((arg) => CODEX_COMMANDS.has(arg));
+
+  if (commandIndex === -1) {
+    return true;
+  }
+
+  const command = args[commandIndex];
+  if (command === 'debug') {
+    return args[commandIndex + 1] === 'prompt-input';
+  }
+
+  return PROFILE_COMMANDS.has(command);
+}
+
+async function cleanupStaleCodexProfiles({
+  codexHome = resolveCodexHome(),
   now = Date.now(),
-  maxAgeMs = STALE_CODEX_HOME_AGE_MS,
+  maxAgeMs = STALE_CODEX_PROFILE_AGE_MS,
   readdirFn = fs.readdir,
   statFn = fs.stat,
-  rmFn = fs.rm,
+  unlinkFn = fs.unlink,
 } = {}) {
   let entries;
   try {
-    entries = await readdirFn(tempRoot, { withFileTypes: true });
+    entries = await readdirFn(codexHome, { withFileTypes: true });
   } catch (error) {
     if (error && error.code === 'ENOENT') {
       return;
@@ -127,15 +181,18 @@ async function cleanupStaleCodexHomes({
   }
 
   await Promise.all(entries.map(async (entry) => {
-    if (!entry.name.startsWith(CODEX_TEMP_PREFIX)) {
+    if (
+      !entry.name.startsWith(CODEX_PROFILE_PREFIX)
+      || !entry.name.endsWith('.config.toml')
+    ) {
       return;
     }
 
-    if (typeof entry.isDirectory === 'function' && !entry.isDirectory()) {
+    if (typeof entry.isFile === 'function' && !entry.isFile()) {
       return;
     }
 
-    const fullPath = path.join(tempRoot, entry.name);
+    const fullPath = path.join(codexHome, entry.name);
     let stats;
     try {
       stats = await statFn(fullPath);
@@ -150,7 +207,13 @@ async function cleanupStaleCodexHomes({
       return;
     }
 
-    await rmFn(fullPath, { recursive: true, force: true });
+    try {
+      await unlinkFn(fullPath);
+    } catch (error) {
+      if (!error || error.code !== 'ENOENT') {
+        throw error;
+      }
+    }
   }));
 }
 
@@ -158,13 +221,14 @@ async function createCodexLaunchPlan({
   provider,
   commonConfig = '',
   codexArgs,
-  tempRoot = os.tmpdir(),
-  mkdtempFn = fs.mkdtemp,
+  codexHome = resolveCodexHome(),
+  profileName,
+  mkdirFn = fs.mkdir,
   writeFileFn = fs.writeFile,
-  rmFn = fs.rm,
-  cleanupStaleCodexHomesFn = cleanupStaleCodexHomes,
+  unlinkFn = fs.unlink,
+  cleanupStaleCodexProfilesFn = cleanupStaleCodexProfiles,
 } = {}) {
-  await cleanupStaleCodexHomesFn({ tempRoot });
+  await cleanupStaleCodexProfilesFn({ codexHome });
 
   const providerSettings = parseProviderSettings(provider);
   const providerMeta = parseProviderMeta(provider);
@@ -174,31 +238,22 @@ async function createCodexLaunchPlan({
   const configText = providerMeta.commonConfigEnabled
     ? mergeCodexTomlConfig(commonConfig, providerConfig)
     : mergeCodexTomlConfig('', providerConfig);
-  const codexHome = await mkdtempFn(path.join(tempRoot, CODEX_TEMP_PREFIX));
-  const configPath = path.join(codexHome, 'config.toml');
-  const authPath = path.join(codexHome, 'auth.json');
-  const nativeCodexHome = path.join(os.homedir(), '.codex');
+  const launchArgs = Array.isArray(codexArgs) ? [...codexArgs] : [];
+  const useProfile = supportsCodexProfile(launchArgs);
+  const selectedProfileName = useProfile
+    ? profileName || `${CODEX_PROFILE_PREFIX}${process.pid}-${Date.now()}-${randomUUID()}`
+    : '';
+  const profilePath = selectedProfileName
+    ? path.join(codexHome, `${selectedProfileName}.config.toml`)
+    : '';
 
-  await writeFileFn(configPath, configText, 'utf8');
-
-  if (hasAuthConfig(providerSettings.auth)) {
-    await writeFileFn(authPath, JSON.stringify(providerSettings.auth, null, 2), 'utf8');
+  if (profilePath) {
+    await mkdirFn(codexHome, { recursive: true });
+    await writeFileFn(profilePath, configText, {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
   }
-
-  await Promise.all(['sessions', 'archived_sessions'].map(async (name) => {
-    const sourcePath = path.join(nativeCodexHome, name);
-    const targetPath = path.join(codexHome, name);
-
-    try {
-      await fs.symlink(sourcePath, targetPath, 'dir');
-    } catch (error) {
-      if (error && error.code === 'ENOENT') {
-        return;
-      }
-
-      throw error;
-    }
-  }));
 
   let cleaned = false;
   const cleanup = async () => {
@@ -207,12 +262,21 @@ async function createCodexLaunchPlan({
     }
 
     cleaned = true;
-    await rmFn(codexHome, { recursive: true, force: true });
+    if (!profilePath) {
+      return;
+    }
+
+    try {
+      await unlinkFn(profilePath);
+    } catch (error) {
+      if (!error || error.code !== 'ENOENT') {
+        throw error;
+      }
+    }
   };
 
-  const env = { ...process.env };
+  const env = { ...process.env, CODEX_HOME: codexHome };
   delete env.OPENAI_API_KEY;
-  env.CODEX_HOME = codexHome;
 
   if (
     providerSettings.auth
@@ -224,19 +288,25 @@ async function createCodexLaunchPlan({
 
   return {
     command: 'codex',
-    args: Array.isArray(codexArgs) ? [...codexArgs] : [],
+    args: profilePath
+      ? ['--profile', selectedProfileName, ...launchArgs]
+      : launchArgs,
     env,
     codexHome,
-    configPath,
-    authPath: hasAuthConfig(providerSettings.auth) ? authPath : '',
+    configPath: profilePath,
+    profileName: selectedProfileName,
+    profilePath,
+    authPath: '',
     cleanup,
   };
 }
 
 module.exports = {
-  CODEX_TEMP_PREFIX,
-  STALE_CODEX_HOME_AGE_MS,
-  cleanupStaleCodexHomes,
+  CODEX_PROFILE_PREFIX,
+  STALE_CODEX_PROFILE_AGE_MS,
+  cleanupStaleCodexProfiles,
   createCodexLaunchPlan,
   mergeCodexTomlConfig,
+  resolveCodexHome,
+  supportsCodexProfile,
 };

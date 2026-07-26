@@ -4,6 +4,7 @@ const { EventEmitter } = require('node:events');
 
 const {
   buildVersionString,
+  normalizeCodexArgs,
   parseCliArgs,
   reconcileSelection,
   run,
@@ -50,7 +51,23 @@ test('buildVersionString formats the selo version output', () => {
   assert.equal(buildVersionString('1.2.3'), 'selo v1.2.3');
 });
 
-test('run launches codex mode with a temporary Codex launch plan', async () => {
+test('normalizeCodexArgs maps -d and preserves other Codex arguments', () => {
+  assert.deepStrictEqual(
+    normalizeCodexArgs(['-d', 'exec', '--ephemeral', 'hello']),
+    [
+      '--dangerously-bypass-approvals-and-sandbox',
+      'exec',
+      '--ephemeral',
+      'hello',
+    ],
+  );
+  assert.deepStrictEqual(
+    normalizeCodexArgs(['exec', '--sandbox', 'read-only', 'hello']),
+    ['exec', '--sandbox', 'read-only', 'hello'],
+  );
+});
+
+test('run launches codex mode with normalized Codex arguments', async () => {
   const stdin = new EventEmitter();
   stdin.isTTY = true;
   stdin.setRawMode = () => {};
@@ -69,7 +86,7 @@ test('run launches codex mode with a temporary Codex launch plan', async () => {
   let spawnInput;
   let cleanupCalled = false;
 
-  const exitPromise = run(['codex', '--search'], {
+  const exitPromise = run(['codex', '-d', 'exec', '--ephemeral', 'hello'], {
     stdin,
     stdout,
     stderr,
@@ -141,10 +158,20 @@ test('run launches codex mode with a temporary Codex launch plan', async () => {
   });
   assert.deepStrictEqual(savedSettings, { lastProviderCodex: 'codex-id' });
   assert.equal(codexLaunchInput.commonConfig, 'model_reasoning_effort = "high"');
-  assert.deepStrictEqual(codexLaunchInput.codexArgs, ['--search']);
+  assert.deepStrictEqual(codexLaunchInput.codexArgs, [
+    '--dangerously-bypass-approvals-and-sandbox',
+    'exec',
+    '--ephemeral',
+    'hello',
+  ]);
   assert.deepStrictEqual(spawnInput, {
     command: 'codex',
-    args: ['--search'],
+    args: [
+      '--dangerously-bypass-approvals-and-sandbox',
+      'exec',
+      '--ephemeral',
+      'hello',
+    ],
     options: {
       stdio: 'inherit',
       env: { CODEX_HOME: '/tmp/selo-codex-test' },
